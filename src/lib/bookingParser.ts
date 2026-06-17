@@ -135,7 +135,12 @@ export async function fetchMergedBookings(): Promise<BookingEvent[]> {
   await Promise.all(houses.map(async (house) => {
     for (const feed of house.icalUrls) {
       try {
-        const events = await ical.async.fromURL(feed.url);
+        const events = await ical.async.fromURL(feed.url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/calendar, text/plain, */*'
+          }
+        });
         
         for (const key in events) {
           const event = events[key];
