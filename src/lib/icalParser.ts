@@ -1,0 +1,61 @@
+import ical from 'node-ical';
+import { houses, HouseConfig } from '@/config/houses';
+
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+export interface BookingEvent {
+  id: string;
+  houseId: string;
+  houseName: string;
+  platform: string;
+  summary: string;
+  start: Date;
+  end: Date;
+  color: string;
+}
+
+export async function fetchAllBookings(): Promise<BookingEvent[]> {
+  const allEvents: BookingEvent[] = [];
+
+  // Fetch all in parallel for speed
+  await Promise.all(houses.map(async (house) => {
+    for (const feed of house.icalUrls) {
+      try {
+        const events = await ical.async.fromURL(feed.url);
+        
+        for (const key in events) {
+          const event = events[key];
+          if (event && event.type === 'VEVENT') {
+            const start = new Date(event.start as Date);
+            const end = new Date(event.end as Date);
+            
+            let summaryStr = 'Забронировано';
+            if (typeof event.summary === 'string') {
+              summaryStr = event.summary;
+            } else if (event.summary && typeof event.summary === 'object' && 'val' in event.summary) {
+              summaryStr = (event.summary as any).val || 'Забронировано';
+            }
+            // Очищаем имя от лишних префиксов Booking.com
+            summaryStr = summaryStr.replace('CLOSED - ', '').replace('RESERVED - ', '').replace('Not available', 'Занято').trim();
+            
+            allEvents.push({
+              id: `${house.id}-${key}`,
+              houseId: house.id,
+              houseName: house.shortName,
+              platform: feed.platform,
+              summary: summaryStr,
+              start,
+              end,
+              color: house.color,
+            });
+          }
+        }
+      } catch (error) {
+        console.error(`Error fetching iCal for ${house.name} from ${feed.platform}:`, error);
+      }
+    }
+  }));
+
+  // Sort by start date
+  return allEvents.sort((a, b) => a.start.getTime() - b.start.getTime());
+}
