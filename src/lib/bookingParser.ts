@@ -57,9 +57,9 @@ function getPlatformColor(platform: string): string {
 
 function parseMarkdownBookings(): BookingEvent[] {
   // Try to find the markdown file
-  let filePath = path.join(process.cwd(), '..', 'Бронирования_2026.md');
+  let filePath = path.join(process.cwd(), 'Бронирования_2026.md');
   if (!fs.existsSync(filePath)) {
-    filePath = path.join(process.cwd(), 'Бронирования_2026.md'); // fallback
+    filePath = path.join(process.cwd(), 'public', 'Бронирования_2026.md'); // fallback just in case
   }
   
   if (!fs.existsSync(filePath)) {
