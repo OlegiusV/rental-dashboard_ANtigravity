@@ -130,17 +130,29 @@ function parseMarkdownBookings(): BookingEvent[] {
 }
 
 export async function fetchMergedBookings(): Promise<BookingEvent[]> {
-  const allEvents: BookingEvent[] = parseMarkdownBookings();
+  const markdownEvents: BookingEvent[] = parseMarkdownBookings();
+  const icalEvents: BookingEvent[] = [];
+  const fetchedHouseFeeds = new Set<string>();
 
   await Promise.all(houses.map(async (house) => {
     for (const feed of house.icalUrls) {
       try {
-        const events = await (ical.async as any).fromURL(feed.url, {
+        const response = await fetch(feed.url, {
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
             'Accept': 'text/calendar, text/plain, */*'
-          }
+          },
+          cache: 'no-store'
         });
+        
+        if (!response.ok) {
+          throw new Error(`Failed to fetch iCal: ${response.status} ${response.statusText}`);
+        }
+        
+        fetchedHouseFeeds.add(`${house.id}-${feed.platform.toLowerCase()}`);
+        
+        const text = await response.text();
+        const events = ical.parseICS(text);
         
         for (const key in events) {
           const event = events[key];
@@ -148,58 +160,90 @@ export async function fetchMergedBookings(): Promise<BookingEvent[]> {
             const rawStart = new Date(event.start as Date);
             const rawEnd = new Date(event.end as Date);
             
-            // Adjust from UTC to local Oslo summer time (approx +2h) 
-            // Setting it to noon locally to prevent timezone edge cases
             const start = new Date(rawStart.getTime() + 2 * 60 * 60 * 1000);
             start.setHours(12, 0, 0, 0);
             
             const end = new Date(rawEnd.getTime() + 2 * 60 * 60 * 1000);
             end.setHours(12, 0, 0, 0);
             
-            // Check if this event already exists in our markdown bookings
-            const overlaps = allEvents.some(b => 
-               b.houseId === house.id && 
-               isSameDay(b.start, start) && 
-               isSameDay(b.end, end)
-            );
+            let summaryStr = 'Забронировано';
+            if (typeof event.summary === 'string') {
+              summaryStr = event.summary;
+            } else if (event.summary && typeof event.summary === 'object' && 'val' in event.summary) {
+              summaryStr = (event.summary as any).val || 'Забронировано';
+            }
             
-            if (!overlaps) {
-              let summaryStr = 'Забронировано';
-              if (typeof event.summary === 'string') {
-                summaryStr = event.summary;
-              } else if (event.summary && typeof event.summary === 'object' && 'val' in event.summary) {
-                summaryStr = (event.summary as any).val || 'Забронировано';
-              }
-              
-              summaryStr = summaryStr.replace('CLOSED - ', '').replace('RESERVED - ', '').replace('Not available', 'Занято').trim();
-              
-              const durationDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
-              const isBlock = durationDays > 21 || summaryStr.toLowerCase().includes('not available') || summaryStr.toLowerCase().includes('block');
-              
-              if (!isBlock) {
-                allEvents.push({
-                  id: `${house.id}-${key}`,
-                  houseId: house.id,
-                  houseName: house.shortName,
-                  platform: feed.platform,
-                  summary: summaryStr,
-                  start,
-                  end,
-                  color: getPlatformColor(feed.platform),
-                  status: 'Активна',
-                  source: 'ical'
-                });
-              }
+            summaryStr = summaryStr.replace('CLOSED - ', '').replace('RESERVED - ', '').replace('Not available', 'Занято').trim();
+            
+            const durationDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
+            const isBlock = durationDays > 21 || summaryStr.toLowerCase().includes('not available') || summaryStr.toLowerCase().includes('block');
+            
+            if (!isBlock) {
+              icalEvents.push({
+                id: `${house.id}-${key}`,
+                houseId: house.id,
+                houseName: house.shortName,
+                platform: feed.platform,
+                summary: summaryStr,
+                start,
+                end,
+                color: getPlatformColor(feed.platform),
+                status: 'Активна',
+                source: 'ical'
+              });
             }
           }
         }
       } catch (error) {
         console.error(`Error fetching iCal for ${house.name} from ${feed.platform}:`, error);
+        fs.appendFileSync('ical_errors.log', `${new Date().toISOString()} - Error fetching iCal for ${house.name} from ${feed.platform}: ${error}\n`);
       }
     }
   }));
 
-  // Filter out canceled ones completely as requested
-  const validEvents = allEvents.filter(e => e.status !== 'Отменена');
-  return validEvents.sort((a, b) => a.start.getTime() - b.start.getTime());
+  const allEvents: BookingEvent[] = [];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  // 1. Process Markdown events
+  for (const mdEvent of markdownEvents) {
+    if (mdEvent.status.toLowerCase().includes('отменен') || mdEvent.status.toLowerCase().includes('отменена')) continue;
+    if (mdEvent.start.getFullYear() > 2026) continue;
+
+    const isPlatform = ['booking', 'airbnb', 'campanyon'].some(p => mdEvent.platform.toLowerCase().includes(p));
+    
+    if (isPlatform && mdEvent.start >= today) {
+      const feedKey = `${mdEvent.houseId}-${mdEvent.platform.toLowerCase()}`;
+      if (fetchedHouseFeeds.has(feedKey)) {
+        const hasMatchingIcal = icalEvents.some(icalEv => 
+          icalEv.houseId === mdEvent.houseId &&
+          isSameDay(icalEv.start, mdEvent.start) &&
+          isSameDay(icalEv.end, mdEvent.end)
+        );
+        
+        if (!hasMatchingIcal) {
+          continue; // Drop canceled markdown event
+        }
+      }
+    }
+    
+    allEvents.push(mdEvent);
+  }
+
+  // 2. Process iCal events
+  for (const icalEv of icalEvents) {
+    if (icalEv.start.getFullYear() > 2026) continue;
+    
+    const alreadyAdded = allEvents.some(mdEv => 
+      mdEv.houseId === icalEv.houseId &&
+      isSameDay(mdEv.start, icalEv.start) &&
+      isSameDay(mdEv.end, icalEv.end)
+    );
+    
+    if (!alreadyAdded) {
+      allEvents.push(icalEv);
+    }
+  }
+
+  return allEvents.sort((a, b) => a.start.getTime() - b.start.getTime());
 }
