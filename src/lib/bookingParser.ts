@@ -167,16 +167,25 @@ export async function fetchMergedBookings(): Promise<BookingEvent[]> {
             end.setHours(12, 0, 0, 0);
             
             let summaryStr = 'Забронировано';
+            let rawSummaryLower = '';
+            
             if (typeof event.summary === 'string') {
               summaryStr = event.summary;
+              rawSummaryLower = summaryStr.toLowerCase();
             } else if (event.summary && typeof event.summary === 'object' && 'val' in event.summary) {
               summaryStr = (event.summary as any).val || 'Забронировано';
+              rawSummaryLower = summaryStr.toLowerCase();
             }
             
             summaryStr = summaryStr.replace('CLOSED - ', '').replace('RESERVED - ', '').replace('Not available', 'Занято').trim();
             
             const durationDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
-            const isBlock = durationDays > 21 || summaryStr.toLowerCase().includes('not available') || summaryStr.toLowerCase().includes('block');
+            
+            // "Airbnb (Not available)" is a manual block on Airbnb. 
+            // We do NOT filter "closed - not available" because Booking.com uses it for actual bookings.
+            const isManualBlock = rawSummaryLower === 'airbnb (not available)' || rawSummaryLower.includes('block');
+            
+            const isBlock = durationDays > 21 || isManualBlock;
             
             if (!isBlock) {
               icalEvents.push({
